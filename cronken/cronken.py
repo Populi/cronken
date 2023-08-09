@@ -125,7 +125,7 @@ class Cronken:
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(log_level.upper())
 
-    async def main_loop(self):
+    async def start(self):
         self.logger.debug("Starting main loop")
         self.logger.debug("Initializing redis connection")
         nodes = [Node(**x) for x in self.redis_info]
@@ -164,10 +164,13 @@ class Cronken:
         self.tasks = {}
 
         with suppress(asyncio.exceptions.CancelledError):
-            self.scheduler.shutdown()
+            if self.scheduler:
+                self.scheduler.shutdown()
 
-        self.pubsub.close()
-        self.rclient.close()
+        if self.pubsub:
+            self.pubsub.close()
+        if self.rclient:
+            self.rclient.close()
 
         self.logger.debug("Cleanup finished")
 
@@ -431,7 +434,17 @@ class Cronken:
             # Skip any entries that don't decode
             except (json.JSONDecodeError, UnicodeDecodeError) as e:
                 self.logger.error(f"Failed to load {k} job definition (raw {v}): {e!r}")
-        r
+        return jobs
+
+    async def set_jobs(self, jobs_dict: Dict):
+        # Set jobs replaces what's in the key with what's in jobs_dict by deleting the old one first
+        # We do this in a transaction so we never delete without also replacing
+        async with await self.rclient.pipeline(transaction=True) as pipe:
+            await pipe.delete(keys=[f"{self.namespace}:jobs"])
+            await pipe.hset(key=f"{self.namespace}:jobs", field_values={k: json.dumps(v) for k, v in jobs_dict.items()})
+            await pipe.execute()
+
+    async def update_jobs(self, jobs_dict: Dict):
         # Update jobs only overwrites the keys specified in jobs_dict, leaving old/absent keys alone
         await self.rclient.hset(
             key=f"{self.namespace}:jobs",
@@ -535,6 +548,7 @@ class Cronken:
             self.logger.info(f"EVENT: triggered job {job_name}")
         else:
             self.logger.warning(f"EVENT: Unknown action type {event['action']} for event {event}")
+
     async def listen_for_events(self):
         timeout: int = self.pubsub_timeout
         await self.pubsub.subscribe(f"{self.namespace}:__events__")
@@ -554,4 +568,3 @@ class Cronken:
                     self.logger.exception(f"Encountered exception {e!r} while handling event {event}")
                     continue
             await asyncio.sleep(0.001)
-
