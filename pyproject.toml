@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "cronken"
+version = "0.1.0"
+description = ""
+authors = ["Clint Olson <clint@populi.co>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+coredis = "^4.14.0"
+apscheduler = "<4.0.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
