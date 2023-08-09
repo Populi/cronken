@@ -104,7 +104,8 @@ class Cronken:
                  general_results_limit: int = 10000,
                  output_buffer_size: int = 1024,
                  pubsub_timeout: int = 30,
-                 job_shell: str = "/bin/bash"):
+                 job_shell: str = "/bin/bash",
+                 **kwargs):
 
         # If we're just passed a single {"host": "foo", "port": 1234} dict, wrap it in an array to standardize it
         if type(redis_info) is dict:
