@@ -506,7 +506,21 @@ class Cronken:
                 return
             self.jobs[job_name] = self.job_add(job_name, job_def)
             self.logger.info(f"EVENT: Added job {job_name} with definition {job_def}")
-        elif event["actionT: Job {job_name} does not exist, skipping trigger operation {event}")
+        elif event["action"] == "remove":
+            job_name = event["args"]
+            if job_name not in self.jobs:
+                self.logger.warning(f"EVENT: Job {job_name} does not exist, skipping remove operation {event}")
+                return
+            self.jobs[job_name].remove()
+            self.jobs.pop(job_name)
+            self.logger.info(f"EVENT: removed job {job_name}")
+        elif event["action"] == "reload":
+            await self.reload_jobs()
+            self.logger.info(f"EVENT: reloaded jobs from redis")
+        elif event["action"] == "trigger":
+            job_name = event["args"]
+            if job_name not in self.jobs:
+                self.logger.warning(f"EVENT: Job {job_name} does not exist, skipping trigger operation {event}")
                 return
             known_job = self.jobs[job_name]
             # Schedule an ephemeral copy of the job to run once and then get removed from the scheduler
@@ -521,7 +535,6 @@ class Cronken:
             self.logger.info(f"EVENT: triggered job {job_name}")
         else:
             self.logger.warning(f"EVENT: Unknown action type {event['action']} for event {event}")
-
     async def listen_for_events(self):
         timeout: int = self.pubsub_timeout
         await self.pubsub.subscribe(f"{self.namespace}:__events__")
