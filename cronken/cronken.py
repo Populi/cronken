@@ -69,6 +69,7 @@ class Cronken:
     scripts: Dict[str, Script] = {}
     tasks: Dict[str, Task] = {}
     state: Dict[str, int] = {}
+    lifetime: Optional[asyncio.Future] = None
 
     VALID_COMMANDS = {
         'pause',
@@ -125,8 +126,13 @@ class Cronken:
         self.my_ip = get_local_ip(self.redis_info[0]["host"])
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(log_level.upper())
+        stdout_handler = logging.StreamHandler()
+        stdout_handler.setLevel(log_level.upper())
+        formatter = logging.Formatter(fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        stdout_handler.setFormatter(formatter)
+        self.logger.addHandler(stdout_handler)
 
-    async def start(self):
+    async def start(self) -> asyncio.Future:
         self.logger.debug("Starting main loop")
         self.logger.debug("Initializing redis connection")
         nodes = [Node(**x) for x in self.redis_info]
@@ -155,7 +161,10 @@ class Cronken:
         self.logger.debug("Starting instance heartbeat task")
         self.tasks["heartbeat"] = asyncio.create_task(self.run_instance_heartbeat())
 
+        self.lifetime = asyncio.Future()
+
         self.logger.debug("Initialization complete")
+        return self.lifetime
 
     async def cleanup(self):
         for task in self.tasks.values():
@@ -170,10 +179,9 @@ class Cronken:
 
         if self.pubsub:
             self.pubsub.close()
-        if self.rclient:
-            self.rclient.close()
 
         self.logger.debug("Cleanup finished")
+        self.lifetime.set_result(True)
 
     async def reload_jobs(self):
         new_jobs = await self.get_jobs()
