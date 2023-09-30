@@ -1,9 +1,10 @@
 [tool.poetry]
 name = "cronken"
-version = "0.1.5"
+version = "0.1.6"
 description = ""
 authors = ["Clint Olson <clint@populi.co>"]
 readme = "README.md"
+repository = "https://github.com/populi/cronken"
 
 [tool.poetry.dependencies]
 python = "^3.8"
