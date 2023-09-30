@@ -1,5 +1,6 @@
 # Cronken
 [![GitHub license](https://img.shields.io/github/license/Populi/cronken.svg)](https://github.com/Populi/cronken/blob/master/LICENSE)
+[![PyPI version](https://img.shields.io/pypi/v/cronken)](https://pypi.org/project/cronken/)
 
 ![Cronken logo](cronken-logo.png)
 
