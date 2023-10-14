@@ -25,7 +25,9 @@ from coredis.commands.script import Script
 from coredis.exceptions import LockError
 from coredis.recipes.locks import LuaLock as Lock
 from coredis.typing import Node
-from pydantic import BaseModel, ValidationError, model_validator
+from pydantic import ValidationError
+
+from .json_models import JobDef
 
 # Suppress pytz deprecation warning that should be fixed in the next version of APScheduler
 warnings.filterwarnings("ignore", message="The localize method is no longer necessary, "
@@ -58,49 +60,6 @@ class NeverTrigger(BaseTrigger):
 
     def get_next_fire_time(self, previous_fire_time, now):
         return None
-
-
-class CronArgs(BaseModel):
-    cronstring: Optional[str]
-    year: Optional[str]
-    month: Optional[str]
-    day: Optional[str]
-    week: Optional[str]
-    day_of_week: Optional[str]
-    hour: Optional[str]
-    minute: Optional[str]
-    second: Optional[str]
-    start_date: Optional[str]
-    end_date: Optional[str]
-    timezone: Optional[str]
-    jitter: Optional[int]
-
-    @model_validator(mode="after")
-    def cronstring_or_kwargs(self):
-        time_fields = ("year", "month", "day", "week", "day_of_week", "hour", "minute", "second")
-        assert self.cronstring or any(
-            getattr(self, x) for x in time_fields
-        ), f"Either cronstring or one of the time-based fields ({', '.join(time_fields)}) must be set"
-
-
-class JobArgs(BaseModel):
-    cmd: str
-    lock: Union[str, bool]
-    ttl: int
-
-    @model_validator(mode="after")
-    def cmd_not_empty(self):
-        assert self.cmd, "Job command must not be empty"
-
-
-class StateArgs(BaseModel):
-    paused: bool
-
-
-class JobDef(BaseModel):
-    job_args: JobArgs
-    cron_args: CronArgs
-    state_args: Optional[StateArgs]
 
 
 class Cronken:
