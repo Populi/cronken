@@ -1,33 +1,33 @@
-import struct
+import asyncio
+import hashlib
 import json
+import logging
+import struct
 import time
+import warnings
 from asyncio import Task
 from collections import deque
-from socket import gethostname, socket, AF_INET, SOCK_DGRAM
-
-import hashlib
-import asyncio
-import logging
-from datetime import datetime
 from contextlib import suppress
+from datetime import datetime
 from pathlib import Path
+from socket import AF_INET, SOCK_DGRAM, gethostname, socket
+from typing import Deque, Dict, List, Optional, Union
 from uuid import uuid4
 
-from coredis import Redis, RedisCluster
-from coredis.typing import Node
-from coredis.recipes.locks import LuaLock as Lock
-from coredis.commands.script import Script
-from coredis.commands.pubsub import PubSub, ClusterPubSub
-from coredis.exceptions import LockError
-from typing import Dict, Optional, Union, Deque, List
+from apscheduler.job import Job
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.base import BaseTrigger
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from apscheduler.triggers.base import BaseTrigger
-from apscheduler.job import Job
+from coredis import Redis, RedisCluster
+from coredis.commands.pubsub import ClusterPubSub, PubSub
+from coredis.commands.script import Script
+from coredis.exceptions import LockError
+from coredis.recipes.locks import LuaLock as Lock
+from coredis.typing import Node
+from pydantic import BaseModel, ValidationError, model_validator
 
 # Suppress pytz deprecation warning that should be fixed in the next version of APScheduler
-import warnings
 warnings.filterwarnings("ignore", message="The localize method is no longer necessary, "
                                           "as this time zone supports the fold attribute")
 
