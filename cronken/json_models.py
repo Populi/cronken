@@ -23,6 +23,7 @@ class CronArgs(BaseModel):
         assert self.cronstring or any(
             getattr(self, x) for x in time_fields
         ), f"Either cronstring or one of the time-based fields ({', '.join(time_fields)}) must be set"
+        return self
 
 
 class JobArgs(BaseModel):
@@ -33,13 +34,14 @@ class JobArgs(BaseModel):
     @model_validator(mode="after")
     def cmd_not_empty(self):
         assert self.cmd, "Job command must not be empty"
+        return self
 
 
-class StateArgs(BaseModel):
+class JobState(BaseModel):
     paused: bool = False
 
 
 class JobDef(BaseModel):
     job_args: JobArgs
     cron_args: CronArgs
-    state_args: Optional[StateArgs] = None
+    job_state: Optional[JobState] = None
