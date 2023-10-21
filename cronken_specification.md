@@ -236,3 +236,15 @@ succcessfully run it. Format:
 }
 ```
 Where `<job_name>` is a string containing the name of the job you wish to trigger.
+
+### Event: `validate`
+Causes cronken to validate one or more jobs, attempting to decode them and compare them to its JSON
+spec.  Any jobs that parse as valid JSON but don't validate will be updated, and
+job_def["job_state"]["validation_errors"] will be set to the text of the error.  An empty array of
+job names will result in all jobs being validated. Format:
+```json
+{
+  "action": "validate",
+  "args": [<job_name>, <job_name>, ...]
+}
+```

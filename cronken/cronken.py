@@ -6,12 +6,12 @@ import struct
 import time
 import warnings
 from asyncio import Task
-from collections import deque
+from collections import deque, defaultdict
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from socket import AF_INET, SOCK_DGRAM, gethostname, socket
-from typing import Deque, Dict, List, Optional, Union
+from typing import Deque, Dict, List, Optional, Union, Tuple
 from uuid import uuid4
 
 from apscheduler.job import Job
@@ -81,7 +81,8 @@ class Cronken:
         'add',
         'remove',
         'reload',
-        'trigger'
+        'trigger',
+        'validate'
     }
 
     # Cribbed from https://man7.org/linux/man-pages/man5/crontab.5.html#EXTENSIONS
@@ -438,14 +439,14 @@ class Cronken:
     async def get_jobs(self) -> Dict:
         # If the key doesn't exist, this will return None, so replace it with a blank dict
         raw_jobs = (await self.rclient.hgetall(f"{self.namespace}:jobs")) or {}
-        jobs = {}
+        valid_jobs = {}
         for k, v in raw_jobs.items():
             try:
-                jobs[k.decode('utf-8')] = JobDef.model_validate_json(v).model_dump(exclude_none=True)
-            # Skip any entries that don't decode
-            except (ValidationError, UnicodeDecodeError) as e:
-                self.logger.error(f"Failed to load {k} job definition (raw {v}): {e!r}")
-        return jobs
+                valid_jobs[k.decode('utf-8')] = JobDef.model_validate_json(v).model_dump(exclude_none=True)
+            except (UnicodeDecodeError, ValidationError) as e:
+                # Skip any jobs that fail to validate for whatever reason
+                self.logger.error(f"get_jobs: Failed to load {k} job definition (raw {v}): {e!r}")
+        return valid_jobs
 
     async def set_jobs(self, jobs_dict: Dict):
         # Set jobs replaces what's in the key with what's in jobs_dict by deleting the old one first
@@ -461,6 +462,50 @@ class Cronken:
             key=f"{self.namespace}:jobs",
             field_values={k: json.dumps(v) for k, v in jobs_dict.items()}
         )
+
+    async def validate_jobs(self, job_names:Union[List[str], str, None]) -> int:
+        # We only want a single validation process to be happening at once
+        lock_name = f"{self.namespace}:locks:__validation__"
+        try:
+            async with Lock(self.rclient, lock_name, blocking_timeout=0.1, timeout=60) as acquired_lock:
+                if job_names:
+                    if type(job_names) is str:
+                        job_names = [job_names]
+                    raw_job_defs = await self.rclient.hmget(f"{self.namespace}:jobs", job_names)
+                    raw_jobs = {job_names[i]: raw_job_defs[i] for i in range(len(raw_job_defs)) if raw_job_defs[i]}
+                else:
+                    # If we're not passed a list of job names, validate them all
+                    raw_jobs = (await self.rclient.hgetall(f"{self.namespace}:jobs")) or {}
+
+                updated_jobs = {}
+                for k, v in raw_jobs.items():
+                    try:
+                        # Use a defaultdict for the better ergonomics of being able to set
+                        # ["job_state"]["validation_errors"] without having to worry whether ["job_state"] exists
+                        job_def = defaultdict(dict, json.loads(v))
+                    except json.JSONDecodeError as e:
+                        # Nothing we can do if the JSON fails to decode
+                        self.logger.error(f"validate_jobs: Failed to decode the json for job {k} (raw {v}): {e}")
+                        continue
+                    try:
+                        # Skip any jobs that validate
+                        k.decode('utf-8')
+                        JobDef.model_validate(job_def)
+                        continue
+                    except (UnicodeDecodeError, ValidationError) as e:
+                        # It's assumed that updated jobs are written without the validation_errors key,
+                        # so only update definitions that don't already have it
+                        if "validation_errors" not in job_def["job_state"]:
+                            self.logger.warning(f"Setting errors for job {k}: {e}")
+                            job_def["job_state"]["validation_errors"] = repr(e)
+                            updated_jobs[k] = json.dumps(job_def)
+                if updated_jobs:
+                    await self.rclient.hset(key=f"{self.namespace}:jobs", field_values=updated_jobs)
+                # Returns number of jobs that were updated with validation errors
+                return len(updated_jobs)
+        except LockError:
+            # Someone else is already running a validation, so do nothing
+            return
 
     async def send_event(self, raw_event: str):
         # Validate event to make sure it's at least semi-kosher
@@ -541,6 +586,13 @@ class Cronken:
         elif event["action"] == "reload":
             await self.reload_jobs()
             self.logger.info(f"EVENT: reloaded jobs from redis")
+        elif event["action"] == "validate":
+            job_names = event["args"]
+            num_errors = await self.validate_jobs(job_names)
+            if job_names:
+                self.logger.info(f"EVENT: validated job(s) {job_names}.  Found {num_errors} errors")
+            else:
+                self.logger.info(f"EVENT: validated jobs.  Found {num_errors} errors")
         elif event["action"] == "trigger":
             job_name = event["args"]
             if job_name not in self.jobs:

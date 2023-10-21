@@ -2,6 +2,7 @@ from typing import Optional, Union
 
 from pydantic import BaseModel, model_validator
 
+
 class CronArgs(BaseModel):
     cronstring: Optional[str] = None
     year: Optional[str] = None
@@ -39,6 +40,7 @@ class JobArgs(BaseModel):
 
 class JobState(BaseModel):
     paused: bool = False
+    validation_errors: Optional[str] = None
 
 
 class JobDef(BaseModel):
