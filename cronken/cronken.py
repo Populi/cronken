@@ -186,6 +186,9 @@ class Cronken:
         self.logger.debug("Cleanup finished")
         self.lifetime.set_result(True)
 
+    async def num_jobs(self):
+        return await self.rclient.hlen(f"{self.namespace}:jobs")
+
     async def reload_jobs(self):
         new_jobs = await self.get_jobs()
 
