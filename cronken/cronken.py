@@ -327,7 +327,7 @@ class Cronken:
                         asyncio.create_task(self.run_output(output_key, output_buffer)),
                     ]
                     # Actually run the job
-                    self.logger.info(f"Lock {lock} acquired, running job {job_name}")
+                    self.logger.info(f"[{run_id}] Lock {lock} acquired, running job {job_name}")
                     start_time = time.monotonic()
                     proc, ret_code = None, "no_retcode"
                     try:
@@ -369,7 +369,7 @@ class Cronken:
                 asyncio.create_task(self.run_output(output_key, output_buffer)),
             ]
             # Actually run the job
-            self.logger.debug(f"Running lockless job {job_name}")
+            self.logger.debug(f"[{run_id}] Running lockless job {job_name}")
             proc, ret_code = None, "no_retcode"
             start_time = time.monotonic()
             try:
@@ -413,7 +413,7 @@ class Cronken:
             args=[run_id, ret_code, status, self.max_finalized_output_lines, self.general_results_limit, self.perjob_results_limit]
         )
 
-        self.logger.info(f"job_name: {job_name} cmd:{cmd} lock:{lock} ttl:{ttl} duration: {duration} "
+        self.logger.info(f"[{run_id}] job_name: {job_name} cmd:{cmd} lock:{lock} ttl:{ttl} duration: {duration} "
                          f"host: {self.host} retcode: {ret_code} output: {output}")
 
     def job_add(self, job_name, job_def):
