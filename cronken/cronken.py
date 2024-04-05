@@ -372,7 +372,8 @@ class Cronken:
                             output_buffer.extend(struct.unpack(f'{len(final_output)}c', final_output))
                             ret_code = proc.returncode
                         # Store any remaining output
-                        await self.store_output(output_key, output_buffer, final=True)
+                        if output_buffer:
+                            await self.store_output(output_key, output_buffer, final=True)
                         # Drop the run from known_runs if it exists
                         self.known_runs.pop(run_id, None)
 
@@ -415,7 +416,8 @@ class Cronken:
                     output_buffer.extend(struct.unpack(f'{len(final_output)}c', final_output))
                     ret_code = proc.returncode
                 # Store any remaining output
-                await self.store_output(output_key, output_buffer, final=True)
+                if output_buffer:
+                    await self.store_output(output_key, output_buffer, final=True)
                 # Drop the run from known_runs if it exists
                 self.known_runs.pop(run_id, None)
 
