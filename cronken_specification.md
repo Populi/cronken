@@ -191,6 +191,16 @@ Causes cronken to send a SIGKILL to an in-process run.  Format:
 ```
 Where `<run_id>` is a string containing the run ID you wish to kill.
 
+### Event: 'drain_nodes'
+Causes cronken to pause all jobs, but only on the hosts specified in args.  Format:
+```json
+{
+  "action": "drain_nodes",
+  "args": [<host1>, <host2>, ...]
+}
+```
+Where `<host1>` and `<host2>` are hostnames of nodes cronken is on.
+
 ### Event: `add`
 Causes cronken to add a new job to its internal list.  Format:
 ```json

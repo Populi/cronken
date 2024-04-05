@@ -78,6 +78,7 @@ class Cronken:
         'resume',
         'terminate_run',
         'kill_run',
+        'drain_nodes',
         'add',
         'remove',
         'reload',
@@ -127,6 +128,7 @@ class Cronken:
 
         self.host = gethostname()
         self.my_ip = get_local_ip(self.redis_info[0]["host"])
+        self.draining = False
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(log_level.upper())
         stdout_handler = logging.StreamHandler()
@@ -242,6 +244,14 @@ class Cronken:
         while True:
             await asyncio.sleep(self.output_cadence)
             await self.store_output(output_key, output_buffer)
+
+    @property
+    def status(self):
+        if not self.draining:
+            return "running"
+        if len(self.known_runs) > 0:
+            return "draining"
+        return "drained"
 
     async def run_instance_heartbeat(self):
         instance_heartbeat: Script = self.scripts["instance_heartbeat"]
@@ -568,6 +578,15 @@ class Cronken:
                 self.logger.info(f"EVENT: Killed run {run_id}")
             else:
                 self.logger.warning(f"EVENT: Unknown run {run_id}, cannot kill")
+        elif event["action"] == "drain_nodes":
+            nodes = event["args"]
+            if self.host in nodes:
+                self.logger.info(f"EVENT: Draining node {self.host}")
+                self.draining = True
+                for job_name in self.jobs:
+                    self.jobs[job_name].pause()
+            else:
+                self.logger.info(f"EVENT: Skipping node drain because {self.host} is not on the list")
         elif event["action"] == "add":
             if not all(x in event['args'] for x in ('job_name', 'job_def')):
                 self.logger.warning(f"EVENT: Skipping malformed add event {event}")
