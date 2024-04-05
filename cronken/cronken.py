@@ -376,10 +376,13 @@ class Cronken:
                             await self.store_output(output_key, output_buffer, final=True)
                         # Drop the run from known_runs if it exists
                         self.known_runs.pop(run_id, None)
-
             except LockError as e:
-                self.logger.warning(f"Couldn't acquire lock for {job_name} ({cmd}) due to {e!r}")
-                return
+                # Hopefully they'll eventually make acquire/release LockErrors different exception classes
+                # For now we have to examine the exception string to determine which it is
+                if str(e) == "Could not acquire lock":
+                    # If someone else has the lock here, we're done
+                    return
+                self.logger.warning(f"[{run_id}] Unknown LockError: {str(e)}")
         else:
             # Add the run to rundata
             await run_init([rundata_key, heartbeat_key], [run_id, job_name, self.host])
