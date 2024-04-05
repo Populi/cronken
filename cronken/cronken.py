@@ -110,6 +110,7 @@ class Cronken:
                  output_buffer_size: int = 1024,
                  pubsub_timeout: int = 30,
                  job_shell: str = "/bin/bash",
+                 graceful_cleanup: bool = False,
                  **kwargs):
 
         # If we're just passed a single {"host": "foo", "port": 1234} dict, wrap it in an array to standardize it
@@ -125,6 +126,7 @@ class Cronken:
         self.output_buffer_size = output_buffer_size
         self.pubsub_timeout = pubsub_timeout
         self.job_shell = job_shell
+        self.graceful_cleanup = graceful_cleanup
 
         self.host = gethostname()
         self.my_ip = get_local_ip(self.redis_info[0]["host"])
@@ -178,12 +180,19 @@ class Cronken:
                 await task
         self.tasks = {}
 
+        if self.pubsub:
+            self.pubsub.close()
+
+        # Wait for in-flight jobs to finish if graceful_cleanup is set
+        if self.graceful_cleanup:
+            for job in self.jobs.values():
+                job.pause()
+            while len(self.known_runs) > 0:
+                await asyncio.sleep(0.5)
+
         with suppress(asyncio.exceptions.CancelledError):
             if self.scheduler:
                 self.scheduler.shutdown()
-
-        if self.pubsub:
-            self.pubsub.close()
 
         self.logger.debug("Cleanup finished")
         self.lifetime.set_result(True)
