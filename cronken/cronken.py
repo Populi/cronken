@@ -280,7 +280,7 @@ class Cronken:
     def status(self):
         if not self.draining:
             return "running"
-        if len(self.known_runs) > 0:
+        if len([k for k, v in self.known_runs.items() if v.returncode is None]) > 0:
             return "draining"
         return "drained"
 
