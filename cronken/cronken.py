@@ -7,7 +7,6 @@ import time
 import warnings
 from asyncio import Task
 from collections import deque, defaultdict
-from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from socket import AF_INET, SOCK_DGRAM, gethostname, socket
@@ -174,10 +173,13 @@ class Cronken:
         return self.lifetime
 
     async def cleanup(self):
-        for task in self.tasks.values():
-            task.cancel()
-            with suppress(asyncio.exceptions.CancelledError):
-                await task
+        for name, task in self.tasks.items():
+            try:
+                task.cancel()
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                self.logger.exception(f"Task {name} hit exception during cleanup: {e!r}")
         self.tasks = {}
 
         if self.pubsub:
@@ -190,9 +192,13 @@ class Cronken:
             while len(self.known_runs) > 0:
                 await asyncio.sleep(0.5)
 
-        with suppress(asyncio.exceptions.CancelledError):
-            if self.scheduler:
+        if self.scheduler:
+            try:
                 self.scheduler.shutdown()
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                self.logger.exception(f"Scheduler hit exception during cleanup: {e!r}")
 
         self.logger.debug("Cleanup finished")
         self.lifetime.set_result(True)
@@ -316,9 +322,12 @@ class Cronken:
                         )
                 finally:
                     extend_task.cancel()
-                    with suppress(asyncio.CancelledError):
+                    try:
                         await extend_task
-        except LockError:
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as e:
+                        self.logger.exception(f"Reaper extend task hit exception: {e!r}")
             # Someone else is running the reaper, so do nothing
             return
 
@@ -364,8 +373,13 @@ class Cronken:
                         # Stop all the background tasks
                         [task.cancel() for task in tasks]
                         for task in tasks:
-                            with suppress(asyncio.CancelledError):
+                            try:
                                 await task
+                            except asyncio.CancelledError:
+                                pass
+                            except Exception as e:
+                                self.logger.exception(f"[{run_id}] hit exception while cancelling: {e!r}")
+
                         # Extract any remaining output and make sure there's a return code present
                         if proc:
                             final_output, _ = await proc.communicate()
@@ -411,8 +425,13 @@ class Cronken:
                 # Stop all the background tasks
                 [task.cancel() for task in tasks]
                 for task in tasks:
-                    with suppress(asyncio.CancelledError):
+                    try:
                         await task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as e:
+                        self.logger.exception(f"[{run_id}] hit exception while cancelling: {e!r}")
+
                 # Extract any remaining output and make sure there's a return code present
                 if proc:
                     final_output, _ = await proc.communicate()
