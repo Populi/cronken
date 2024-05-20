@@ -21,8 +21,8 @@ from apscheduler.triggers.interval import IntervalTrigger
 from coredis import Redis, RedisCluster
 from coredis.commands.pubsub import ClusterPubSub, PubSub
 from coredis.commands.script import Script
-from coredis.exceptions import LockError
-from coredis.recipes.locks import LuaLock as Lock
+from coredis.exceptions import LockAcquisitionError, LockReleaseError, LockError
+from coredis.recipes.locks import LuaLock
 from coredis.typing import Node
 from pydantic import ValidationError
 
@@ -34,6 +34,22 @@ warnings.filterwarnings("ignore", message="The localize method is no longer nece
 
 
 SOURCE_DIR = Path(__file__).parent.absolute()
+
+
+class LockReleaseTimeoutError(LockReleaseError):
+    pass
+
+
+class Lock(LuaLock):
+    def __init__(self, *args, release_timeout: int = 5, **kwargs):
+        self.release_timeout = release_timeout
+        super().__init__(*args, **kwargs)
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        try:
+            await asyncio.wait_for(super().__aexit__(exc_type, exc_val, exc_tb), timeout=self.release_timeout)
+        except TimeoutError:
+            raise LockReleaseTimeoutError()
 
 
 # From https://stackoverflow.com/a/28950776
@@ -328,8 +344,11 @@ class Cronken:
                         pass
                     except Exception as e:
                         self.logger.exception(f"Reaper extend task hit exception: {e!r}")
+        except LockAcquisitionError:
             # Someone else is running the reaper, so do nothing
             return
+        except LockError:
+            self.logger.warning(f"Reaper lock hit error {e!r}")
 
     async def job_run(self, job_name: str, cmd: str, lock: Union[bool, str], ttl: int):
         run_init: Script = self.scripts["run_init"]
@@ -390,13 +409,15 @@ class Cronken:
                             await self.store_output(output_key, output_buffer, final=True)
                         # Drop the run from known_runs if it exists
                         self.known_runs.pop(run_id, None)
+            except LockAcquisitionError:
+                self.logger.debug(f"[{run_id}] Lock {lock} already acquired, skipping job {job_name}")
+                return
+            except LockReleaseError as e:
+                self.logger.warning(f"[{run_id}] failed to release lock: {str(e)}")
             except LockError as e:
-                # Hopefully they'll eventually make acquire/release LockErrors different exception classes
-                # For now we have to examine the exception string to determine which it is
-                if str(e) == "Could not acquire lock":
-                    # If someone else has the lock here, we're done
-                    return
-                self.logger.warning(f"[{run_id}] Unknown LockError: {str(e)}")
+                self.logger.warning(f"[{run_id}] Unknown LockError: {e!r}")
+            except Exception as e:
+                self.logger.warning(f"[{run_id}] Unknown exception: {e!r}")
         else:
             # Add the run to rundata
             await run_init([rundata_key, heartbeat_key], [run_id, job_name, self.host])
