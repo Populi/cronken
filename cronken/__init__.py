@@ -1,3 +1,3 @@
 from .cronken import Cronken
 
-__version__ = "0.1.18"
+__version__ = "0.1.19"

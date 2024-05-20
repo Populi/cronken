@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "cronken"
-version = "0.1.18"
+version = "0.1.19"
 description = ""
 authors = ["Clint Olson <clint@populi.co>"]
 readme = "README.md"
@@ -8,7 +8,7 @@ repository = "https://github.com/populi/cronken"
 
 [tool.poetry.dependencies]
 python = "^3.8"
-coredis = "^4.14.0"
+coredis = "^4.17.0"
 apscheduler = "<4.0.0"
 pydantic = "^2.4.2"
 
