@@ -225,14 +225,14 @@ class Cronken:
         trigger = IntervalTrigger(seconds=self.heartbeat_cadence)
         self.jobs["__reaper__"] = self.scheduler.add_job(func=self.run_reaper, trigger=trigger)
 
-    async def lock_extender(self, acquired_lock: Lock, ttl: float):
+    async def lock_extender(self, acquired_lock: Lock, ttl: float, run_id: str = "Unknown"):
         interval = float(ttl) / 2
         while True:
             await asyncio.sleep(interval)
             try:
                 await acquired_lock.extend(interval)
             except LockError as e:
-                self.logger.warning(f"Lock extender failed with exception {e!r}")
+                self.logger.warning(f"[{run_id}] Lock extender failed with exception {e!r}")
                 break
 
     async def run_heartbeat(self, run_id: str):
@@ -292,7 +292,7 @@ class Cronken:
         try:
             async with Lock(self.rclient, lock_name, blocking_timeout=0.1, timeout=10) as acquired_lock:
                 self.logger.debug("Running reaper!")
-                extend_task = asyncio.create_task(self.lock_extender(acquired_lock, 10))
+                extend_task = asyncio.create_task(self.lock_extender(acquired_lock, 10, run_id="reaper"))
                 try:
                     # Reap instances with stale heartbeats
                     # Use 1.5x the heartbeat cadence so we avoid edge cases where the heartbeat is slightly late
@@ -350,7 +350,7 @@ class Cronken:
                     await run_init([rundata_key, heartbeat_key], [run_id, job_name, self.host])
                     # Start background tasks
                     tasks = [
-                        asyncio.create_task(self.lock_extender(acquired_lock, ttl)),
+                        asyncio.create_task(self.lock_extender(acquired_lock, ttl, run_id=run_id)),
                         asyncio.create_task(self.run_heartbeat(run_id)),
                         asyncio.create_task(self.run_output(output_key, output_buffer)),
                     ]
