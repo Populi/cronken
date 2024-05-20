@@ -400,7 +400,7 @@ class Cronken:
                                 self.logger.exception(f"[{run_id}] hit exception while cancelling: {e!r}")
 
                         # Extract any remaining output and make sure there's a return code present
-                        if proc:
+                        if proc is not None:
                             final_output, _ = await proc.communicate()
                             output_buffer.extend(struct.unpack(f'{len(final_output)}c', final_output))
                             ret_code = proc.returncode
@@ -454,7 +454,7 @@ class Cronken:
                         self.logger.exception(f"[{run_id}] hit exception while cancelling: {e!r}")
 
                 # Extract any remaining output and make sure there's a return code present
-                if proc:
+                if proc is not None:
                     final_output, _ = await proc.communicate()
                     output_buffer.extend(struct.unpack(f'{len(final_output)}c', final_output))
                     ret_code = proc.returncode
