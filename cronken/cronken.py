@@ -24,6 +24,7 @@ from coredis.commands.script import Script
 from coredis.exceptions import LockAcquisitionError, LockReleaseError, LockError
 from coredis.recipes.locks import LuaLock
 from coredis.typing import Node
+from coredis._utils import hash_slot
 from pydantic import ValidationError
 
 from .json_models import JobDef
@@ -82,6 +83,7 @@ class Cronken:
     jobs: Dict[str, Job] = {}
     known_runs: Dict[str, asyncio.subprocess.Process] = {}
     rclient: Union[Redis, RedisCluster, None] = None
+    rclient_locks: Union[Redis, RedisCluster, None] = None
     pubsub: Union[PubSub, ClusterPubSub, None] = None
     scripts: Dict[str, Script] = {}
     tasks: Dict[str, Task] = {}
@@ -126,6 +128,7 @@ class Cronken:
                  pubsub_timeout: int = 30,
                  job_shell: str = "/bin/bash",
                  graceful_cleanup: bool = False,
+                 nonclustered_lock: bool = False,
                  **kwargs):
 
         # If we're just passed a single {"host": "foo", "port": 1234} dict, wrap it in an array to standardize it
@@ -142,6 +145,7 @@ class Cronken:
         self.pubsub_timeout = pubsub_timeout
         self.job_shell = job_shell
         self.graceful_cleanup = graceful_cleanup
+        self.nonclustered_lock = nonclustered_lock
 
         self.host = gethostname()
         self.my_ip = get_local_ip(self.redis_info[0]["host"])
@@ -164,6 +168,14 @@ class Cronken:
         else:
             self.rclient = Redis(host=nodes[0]["host"], port=nodes[0]["port"])
         self.pubsub = self.rclient.pubsub(ignore_subscribe_messages=True)
+
+        if self.nonclustered_lock and isinstance(self.rclient, RedisCluster):
+            # Make sure we have cluster slots cached in the connection pool object
+            await self.rclient.cluster_slots()
+            primary_node = self.rclient.connection_pool.get_primary_node_by_slot(hash_slot(self.namespace.encode()))
+            self.rclient_locks = Redis(host=primary_node.host, port=primary_node.port)
+        else:
+            self.rclient_locks = self.rclient
 
         self.logger.debug("Loading lua scripts into redis")
         for lua_file in SOURCE_DIR.glob('*.lua'):
@@ -306,7 +318,7 @@ class Cronken:
         lock_name = f"{self.namespace}:locks:__reaper__"
 
         try:
-            async with Lock(self.rclient, lock_name, blocking_timeout=0.1, timeout=10) as acquired_lock:
+            async with Lock(self.rclient_locks, lock_name, blocking_timeout=0.1, timeout=10) as acquired_lock:
                 self.logger.debug("Running reaper!")
                 extend_task = asyncio.create_task(self.lock_extender(acquired_lock, 10, run_id="reaper"))
                 try:
@@ -364,7 +376,7 @@ class Cronken:
         if lock:
             lock_name = f"{self.namespace}:locks:{hashlib.sha1(lock.encode('utf-8')).hexdigest()}"
             try:
-                async with Lock(self.rclient, lock_name, blocking_timeout=0.1, timeout=ttl) as acquired_lock:
+                async with Lock(self.rclient_locks, lock_name, blocking_timeout=0.1, timeout=ttl) as acquired_lock:
                     # Add the run to rundata
                     await run_init([rundata_key, heartbeat_key], [run_id, job_name, self.host])
                     # Start background tasks
@@ -534,7 +546,7 @@ class Cronken:
         # We only want a single validation process to be happening at once
         lock_name = f"{self.namespace}:locks:__validation__"
         try:
-            async with Lock(self.rclient, lock_name, blocking_timeout=0.1, timeout=60) as acquired_lock:
+            async with Lock(self.rclient_locks, lock_name, blocking_timeout=0.1, timeout=60) as acquired_lock:
                 if job_names:
                     if type(job_names) is str:
                         job_names = [job_names]
