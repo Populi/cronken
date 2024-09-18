@@ -253,7 +253,7 @@ class Cronken:
         trigger = IntervalTrigger(seconds=self.heartbeat_cadence)
         self.jobs["__reaper__"] = self.scheduler.add_job(func=self.run_reaper, trigger=trigger)
 
-    async def lock_extender(self, acquired_lock: Lock, ttl: float, run_id: str = "Unknown"):
+    async def lock_extender(self, acquired_lock: LuaLock, ttl: float, run_id: str = "Unknown"):
         interval = float(ttl) / 2
         while True:
             await asyncio.sleep(interval)
@@ -542,7 +542,7 @@ class Cronken:
             field_values={k: json.dumps(v) for k, v in jobs_dict.items()}
         )
 
-    async def validate_jobs(self, job_names:Union[List[str], str, None]) -> int:
+    async def validate_jobs(self, job_names:Union[List[str], str, None]) -> Optional[int]:
         # We only want a single validation process to be happening at once
         lock_name = f"{self.namespace}:locks:__validation__"
         try:
