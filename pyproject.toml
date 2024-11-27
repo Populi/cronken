@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "cronken"
-version = "0.1.20"
+version = "0.1.21a1"
 description = ""
 authors = ["Clint Olson <clint@populi.co>"]
 readme = "README.md"

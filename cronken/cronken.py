@@ -37,22 +37,6 @@ warnings.filterwarnings("ignore", message="The localize method is no longer nece
 SOURCE_DIR = Path(__file__).parent.absolute()
 
 
-class LockReleaseTimeoutError(LockReleaseError):
-    pass
-
-
-class Lock(LuaLock):
-    def __init__(self, *args, release_timeout: int = 5, **kwargs):
-        self.release_timeout = release_timeout
-        super().__init__(*args, **kwargs)
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        try:
-            await asyncio.wait_for(super().__aexit__(exc_type, exc_val, exc_tb), timeout=self.release_timeout)
-        except TimeoutError:
-            raise LockReleaseTimeoutError()
-
-
 # From https://stackoverflow.com/a/28950776
 # Finds the IP address of the local interface that routes to a remote address
 def get_local_ip(remote_routable_addr: str):
@@ -170,10 +154,24 @@ class Cronken:
         self.pubsub = self.rclient.pubsub(ignore_subscribe_messages=True)
 
         if self.nonclustered_lock and isinstance(self.rclient, RedisCluster):
-            # Make sure we have cluster slots cached in the connection pool object
-            await self.rclient.cluster_slots()
-            primary_node = self.rclient.connection_pool.get_primary_node_by_slot(hash_slot(self.namespace.encode()))
-            self.rclient_locks = Redis(host=primary_node.host, port=primary_node.port)
+            host, port = None, None
+            # Check and see if there's already registered nonclustered-lock node info in Redis
+            primary_node_raw = await self.rclient.get(f"{self.namespace}:lock_node")
+            try:
+                host, port = primary_node_raw.split(":")
+            except ValueError:
+                # The key exists, but is in the wrong format (doesn't have a colon)
+                self.logger.error(f"nonclustered_lock specified, but {self.namespace}:lock_node doesn't have valid data.")
+                raise
+            # If the split above failed (perhaps because the key doesn't exist and returned None or there wasn't
+            # a colon), host and port will keep their initial values of None and we'll grab
+            if not host:
+                # Make sure we have cluster slots cached in the connection pool object
+                await self.rclient.cluster_slots()
+                primary_node = self.rclient.connection_pool.get_primary_node_by_slot(hash_slot(self.namespace.encode()))
+                host, port = primary_node
+
+            self.rclient_locks = Redis(host=host, port=port)
         else:
             self.rclient_locks = self.rclient
 
@@ -318,49 +316,50 @@ class Cronken:
         lock_name = f"{self.namespace}:locks:__reaper__"
 
         try:
-            async with Lock(self.rclient_locks, lock_name, blocking_timeout=0.1, timeout=10) as acquired_lock:
-                self.logger.debug("Running reaper!")
-                extend_task = asyncio.create_task(self.lock_extender(acquired_lock, 10, run_id="reaper"))
-                try:
-                    # Reap instances with stale heartbeats
-                    # Use 1.5x the heartbeat cadence so we avoid edge cases where the heartbeat is slightly late
-                    await instance_reap([instance_heartbeat_key], [cadence+(cadence//2)])
-                    # Get the list of expired runs
-                    expired_runs_str = await run_get_expired([rundata_key, heartbeat_key], [cadence+(cadence//2)])
-                    expired_runs = json.loads(expired_runs_str)
-                    self.logger.debug(f"Expiring runs: {expired_runs}")
-                    for run_id, job_name in expired_runs.items():
-                        # If the run_id doesn't exist in rundata, just drop it from the active set
-                        if not job_name:
-                            await self.rclient.hdel(heartbeat_key, [run_id])
-                            continue
+            lock = LuaLock(self.rclient_locks, lock_name, blocking_timeout=0, timeout=10)
+            acquired = await lock.acquire()
+            if not acquired:
+                # Someone else is running the reaper currently
+                return
+            self.logger.debug("Running reaper!")
+            extend_task = asyncio.create_task(self.lock_extender(lock, 10, run_id="reaper"))
+            try:
+                # Reap instances with stale heartbeats
+                # Use 1.5x the heartbeat cadence so we avoid edge cases where the heartbeat is slightly late
+                await instance_reap([instance_heartbeat_key], [cadence+(cadence//2)])
+                # Get the list of expired runs
+                expired_runs_str = await run_get_expired([rundata_key, heartbeat_key], [cadence+(cadence//2)])
+                expired_runs = json.loads(expired_runs_str)
+                self.logger.debug(f"Expiring runs: {expired_runs}")
+                for run_id, job_name in expired_runs.items():
+                    # If the run_id doesn't exist in rundata, just drop it from the active set
+                    if not job_name:
+                        await self.rclient.hdel(heartbeat_key, [run_id])
+                        continue
 
-                        output_key = f"{self.namespace}:rundata:output:{run_id}"
-                        perjob_fail_key = f"{self.namespace}:results:{job_name}:fail"
-                        await run_finalize(
-                            keys=[rundata_key, heartbeat_key, output_key, results_fail_key, perjob_fail_key],
-                            args=[
-                                run_id,
-                                "no_retcode",
-                                "frozen",
-                                self.max_finalized_output_lines,
-                                self.general_results_limit,
-                                self.perjob_results_limit
-                            ]
-                        )
-                finally:
-                    extend_task.cancel()
-                    try:
-                        await extend_task
-                    except asyncio.CancelledError:
-                        pass
-                    except Exception as e:
-                        self.logger.exception(f"Reaper extend task hit exception: {e!r}")
-        except LockAcquisitionError:
-            # Someone else is running the reaper, so do nothing
-            return
-        except LockError:
-            self.logger.warning(f"Reaper lock hit error {e!r}")
+                    output_key = f"{self.namespace}:rundata:output:{run_id}"
+                    perjob_fail_key = f"{self.namespace}:results:{job_name}:fail"
+                    await run_finalize(
+                        keys=[rundata_key, heartbeat_key, output_key, results_fail_key, perjob_fail_key],
+                        args=[
+                            run_id,
+                            "no_retcode",
+                            "frozen",
+                            self.max_finalized_output_lines,
+                            self.general_results_limit,
+                            self.perjob_results_limit
+                        ]
+                    )
+            finally:
+                extend_task.cancel()
+                try:
+                    await extend_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    self.logger.exception(f"Reaper extend task hit exception: {e!r}")
+        except Exception as e:
+            self.logger.exception(f"Reaper hit exception: {e!r}")
 
     async def job_run(self, job_name: str, cmd: str, lock: Union[bool, str], ttl: int):
         run_init: Script = self.scripts["run_init"]
@@ -373,75 +372,33 @@ class Cronken:
         # Initialize the lock to a default value based on the job if it's set to True
         if lock is True:
             lock = job_name
+        # Attempt to acquire the lock if we're locking and bail out if we can't (someone else is doing it)
+        lock_obj = None
         if lock:
             lock_name = f"{self.namespace}:locks:{hashlib.sha1(lock.encode('utf-8')).hexdigest()}"
-            try:
-                async with Lock(self.rclient_locks, lock_name, blocking_timeout=0.1, timeout=ttl) as acquired_lock:
-                    # Add the run to rundata
-                    await run_init([rundata_key, heartbeat_key], [run_id, job_name, self.host])
-                    # Start background tasks
-                    tasks = [
-                        asyncio.create_task(self.lock_extender(acquired_lock, ttl, run_id=run_id)),
-                        asyncio.create_task(self.run_heartbeat(run_id)),
-                        asyncio.create_task(self.run_output(output_key, output_buffer)),
-                    ]
-                    # Actually run the job
-                    self.logger.info(f"[{run_id}] Lock {lock} acquired, running job {job_name}")
-                    start_time = time.monotonic()
-                    proc, ret_code = None, "no_retcode"
-                    try:
-                        # Start the process and combine stdout/stderr into a single stream
-                        proc = await asyncio.create_subprocess_shell(cmd,
-                                                                     executable=self.job_shell,
-                                                                     stdout=asyncio.subprocess.PIPE,
-                                                                     stderr=asyncio.subprocess.STDOUT)
-                        self.known_runs[run_id] = proc
-                        while new_output := await proc.stdout.read(self.output_buffer_size):
-                            # Annoyingly, struct.unpack is the fastest way to put bytes on a deque without external
-                            # libraries by orders of magnitude, see https://stackoverflow.com/a/57543519
-                            output_buffer.extend(struct.unpack(f'{len(new_output)}c', new_output))
-                    finally:
-                        # Stop all the background tasks
-                        [task.cancel() for task in tasks]
-                        for task in tasks:
-                            try:
-                                await task
-                            except asyncio.CancelledError:
-                                pass
-                            except Exception as e:
-                                self.logger.exception(f"[{run_id}] hit exception while cancelling: {e!r}")
-
-                        # Extract any remaining output and make sure there's a return code present
-                        if proc is not None:
-                            final_output, _ = await proc.communicate()
-                            output_buffer.extend(struct.unpack(f'{len(final_output)}c', final_output))
-                            ret_code = proc.returncode
-                        # Store any remaining output
-                        if output_buffer:
-                            await self.store_output(output_key, output_buffer, final=True)
-                        # Drop the run from known_runs if it exists
-                        self.known_runs.pop(run_id, None)
-            except LockAcquisitionError:
+            lock_obj = LuaLock(self.rclient_locks, lock_name, blocking_timeout=0, timeout=ttl)
+            acquired = await lock_obj.acquire()
+            if not acquired:
                 self.logger.debug(f"[{run_id}] Lock {lock} already acquired, skipping job {job_name}")
                 return
-            except LockReleaseError as e:
-                self.logger.warning(f"[{run_id}] failed to release lock: {str(e)}")
-            except LockError as e:
-                self.logger.warning(f"[{run_id}] Unknown LockError: {e!r}")
-            except Exception as e:
-                self.logger.warning(f"[{run_id}] Unknown exception: {e!r}")
-        else:
+        try:
             # Add the run to rundata
             await run_init([rundata_key, heartbeat_key], [run_id, job_name, self.host])
-            # Start the background tasks
+            # Start background tasks
             tasks = [
                 asyncio.create_task(self.run_heartbeat(run_id)),
                 asyncio.create_task(self.run_output(output_key, output_buffer)),
             ]
+            # If we're doing locking, add the lock extender to the tasks list
+            if lock_obj:
+                tasks.append(asyncio.create_task(self.lock_extender(lock_obj, ttl, run_id=run_id)))
+                self.logger.info(f"[{run_id}] Lock {lock} acquired, running job {job_name}")
+            else:
+                self.logger.debug(f"[{run_id}] Running lockless job {job_name}")
+
             # Actually run the job
-            self.logger.debug(f"[{run_id}] Running lockless job {job_name}")
-            proc, ret_code = None, "no_retcode"
             start_time = time.monotonic()
+            proc, ret_code = None, "no_retcode"
             try:
                 # Start the process and combine stdout/stderr into a single stream
                 proc = await asyncio.create_subprocess_shell(cmd,
@@ -453,7 +410,6 @@ class Cronken:
                     # Annoyingly, struct.unpack is the fastest way to put bytes on a deque without external
                     # libraries by orders of magnitude, see https://stackoverflow.com/a/57543519
                     output_buffer.extend(struct.unpack(f'{len(new_output)}c', new_output))
-
             finally:
                 # Stop all the background tasks
                 [task.cancel() for task in tasks]
@@ -475,6 +431,8 @@ class Cronken:
                     await self.store_output(output_key, output_buffer, final=True)
                 # Drop the run from known_runs if it exists
                 self.known_runs.pop(run_id, None)
+        except Exception as e:
+            self.logger.warning(f"[{run_id}] Unknown exception: {e!r}")
 
         end_time = time.monotonic()
         duration = end_time - start_time
@@ -545,46 +503,50 @@ class Cronken:
     async def validate_jobs(self, job_names:Union[List[str], str, None]) -> Optional[int]:
         # We only want a single validation process to be happening at once
         lock_name = f"{self.namespace}:locks:__validation__"
-        try:
-            async with Lock(self.rclient_locks, lock_name, blocking_timeout=0.1, timeout=60) as acquired_lock:
-                if job_names:
-                    if type(job_names) is str:
-                        job_names = [job_names]
-                    raw_job_defs = await self.rclient.hmget(f"{self.namespace}:jobs", job_names)
-                    raw_jobs = {job_names[i]: raw_job_defs[i] for i in range(len(raw_job_defs)) if raw_job_defs[i]}
-                else:
-                    # If we're not passed a list of job names, validate them all
-                    raw_jobs = (await self.rclient.hgetall(f"{self.namespace}:jobs")) or {}
-
-                updated_jobs = {}
-                for k, v in raw_jobs.items():
-                    try:
-                        # Use a defaultdict for the better ergonomics of being able to set
-                        # ["job_state"]["validation_errors"] without having to worry whether ["job_state"] exists
-                        job_def = defaultdict(dict, json.loads(v))
-                    except json.JSONDecodeError as e:
-                        # Nothing we can do if the JSON fails to decode
-                        self.logger.error(f"validate_jobs: Failed to decode the json for job {k} (raw {v}): {e}")
-                        continue
-                    try:
-                        # Skip any jobs that validate
-                        k.decode('utf-8')
-                        JobDef.model_validate(job_def)
-                        continue
-                    except (UnicodeDecodeError, ValidationError) as e:
-                        # It's assumed that updated jobs are written without the validation_errors key,
-                        # so only update definitions that don't already have it
-                        if "validation_errors" not in job_def["job_state"]:
-                            self.logger.warning(f"Setting errors for job {k}: {e}")
-                            job_def["job_state"]["validation_errors"] = repr(e)
-                            updated_jobs[k] = json.dumps(job_def)
-                if updated_jobs:
-                    await self.rclient.hset(key=f"{self.namespace}:jobs", field_values=updated_jobs)
-                # Returns number of jobs that were updated with validation errors
-                return len(updated_jobs)
-        except LockError:
+        lock = LuaLock(self.rclient_locks, lock_name, blocking_timeout=0, timeout=60)
+        acquired = await lock.acquire()
+        if not acquired:
             # Someone else is already running a validation, so do nothing
             return
+        try:
+            if job_names:
+                if type(job_names) is str:
+                    job_names = [job_names]
+                raw_job_defs = await self.rclient.hmget(f"{self.namespace}:jobs", job_names)
+                raw_jobs = {job_names[i]: raw_job_defs[i] for i in range(len(raw_job_defs)) if raw_job_defs[i]}
+            else:
+                # If we're not passed a list of job names, validate them all
+                raw_jobs = (await self.rclient.hgetall(f"{self.namespace}:jobs")) or {}
+        finally:
+            # Sometimes the lock gets stuck releasing, so just give it a best-effort try
+            await asyncio.wait_for(lock.release(), timeout=1)
+
+        updated_jobs = {}
+        for k, v in raw_jobs.items():
+            try:
+                # Use a defaultdict for the better ergonomics of being able to set
+                # ["job_state"]["validation_errors"] without having to worry whether ["job_state"] exists
+                job_def = defaultdict(dict, json.loads(v))
+            except json.JSONDecodeError as e:
+                # Nothing we can do if the JSON fails to decode
+                self.logger.error(f"validate_jobs: Failed to decode the json for job {k} (raw {v}): {e}")
+                continue
+            try:
+                # Skip any jobs that validate
+                k.decode('utf-8')
+                JobDef.model_validate(job_def)
+                continue
+            except (UnicodeDecodeError, ValidationError) as e:
+                # It's assumed that updated jobs are written without the validation_errors key,
+                # so only update definitions that don't already have it
+                if "validation_errors" not in job_def["job_state"]:
+                    self.logger.warning(f"Setting errors for job {k}: {e}")
+                    job_def["job_state"]["validation_errors"] = repr(e)
+                    updated_jobs[k] = json.dumps(job_def)
+        if updated_jobs:
+            await self.rclient.hset(key=f"{self.namespace}:jobs", field_values=updated_jobs)
+        # Returns number of jobs that were updated with validation errors
+        return len(updated_jobs)
 
     async def send_event(self, raw_event: str):
         # Validate event to make sure it's at least semi-kosher
