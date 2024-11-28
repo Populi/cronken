@@ -58,9 +58,9 @@ Each job has two required keys (`cron_args` and `job_args`) and one optional key
   or an arbitrary string to use a lock named the contents of the string.  If this is set to `true` or a string, 
   all servers running cronken will attempt to acquire the lock before running `cmd`, and only the one that
   successfully acquires it will actually run it.
-* `ttl`, which is an integer specifying how long the lock should persist if cronken is killed mid-execution.
-  While `cmd` is running, the lock is automatically renewed, but in the event the program crashes or is killed, 
-  the lock will automatically be released in `ttl` seconds.
+* `ttl`, which is an integer specifying the minimum lock time and how long the lock should persist if cronken is killed
+  mid-execution.  While `cmd` is running, the lock is automatically renewed, but in the event the program crashes or
+  is killed, the lock will automatically be released in `ttl` seconds.
 
 `job_state` contains any state-based flags the job has.  Currently, this is only used for persisting paused state 
 across restarts -- if job_state->paused is set to true, the job will be paused on load.  If it's set to false or
