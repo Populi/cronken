@@ -113,6 +113,7 @@ class Cronken:
                  job_shell: str = "/bin/bash",
                  graceful_cleanup: bool = False,
                  nonclustered_lock: bool = False,
+                 minimum_lock_time: float = 0.2,
                  **kwargs):
 
         # If we're just passed a single {"host": "foo", "port": 1234} dict, wrap it in an array to standardize it
@@ -130,6 +131,7 @@ class Cronken:
         self.job_shell = job_shell
         self.graceful_cleanup = graceful_cleanup
         self.nonclustered_lock = nonclustered_lock
+        self.minimum_lock_time = minimum_lock_time
 
         self.host = gethostname()
         self.my_ip = get_local_ip(self.redis_info[0]["host"])
@@ -381,6 +383,8 @@ class Cronken:
             if not acquired:
                 self.logger.debug(f"[{run_id}] Lock {lock} already acquired, skipping job {job_name}")
                 return
+        job_start = time.monotonic()
+        release_task = None
         try:
             # Add the run to rundata
             await run_init([rundata_key, heartbeat_key], [run_id, job_name, self.host])
@@ -433,6 +437,14 @@ class Cronken:
                 self.known_runs.pop(run_id, None)
         except Exception as e:
             self.logger.warning(f"[{run_id}] Unknown exception: {e!r}")
+        finally:
+            job_length = time.monotonic() - job_start
+            time_to_sleep = max(self.minimum_lock_time - job_length, 0.0)
+            async def release_after():
+                await asyncio.sleep(time_to_sleep)
+                await asyncio.wait_for(lock_obj.release(), 1)
+            if lock_obj:
+                release_task = asyncio.create_task(release_after())
 
         end_time = time.monotonic()
         duration = end_time - start_time
@@ -446,6 +458,12 @@ class Cronken:
             keys=[rundata_key, heartbeat_key, output_key, general_result_key, perjob_result_key],
             args=[run_id, ret_code, status, self.max_finalized_output_lines, self.general_results_limit, self.perjob_results_limit]
         )
+
+        if release_task:
+            try:
+                await release_task
+            except Exception as e:
+                self.logger.warning(f"[{run_id}] Failed to release lock {lock}: {e!r}")
 
         self.logger.info(f"[{run_id}] job_name: {job_name} cmd:{cmd} lock:{lock} ttl:{ttl} duration: {duration} "
                          f"host: {self.host} retcode: {ret_code} output: {output}")
