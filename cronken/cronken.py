@@ -114,6 +114,7 @@ class Cronken:
                  graceful_cleanup: bool = False,
                  nonclustered_lock: bool = False,
                  minimum_lock_time: float = 0.2,
+                 output_ttl: int = 0,
                  **kwargs):
 
         # If we're just passed a single {"host": "foo", "port": 1234} dict, wrap it in an array to standardize it
@@ -123,6 +124,7 @@ class Cronken:
         self.namespace = namespace
         self.heartbeat_cadence = heartbeat_cadence
         self.output_cadence = output_cadence
+        self.output_ttl = output_ttl
         self.max_finalized_output_lines = max_finalized_output_lines
         self.perjob_results_limit = perjob_results_limit
         self.general_results_limit = general_results_limit
@@ -271,6 +273,7 @@ class Cronken:
             await run_heartbeat([heartbeat_key], [run_id])
 
     async def store_output(self, output_key: str, output_buffer: Deque[bytes], final=False):
+        rpush_with_expire: Script = self.scripts["rpush_with_expire"]
         # Prepend a ... to the output buffer if we're at max length to indicate dropped bytes
         output_list = [b'...\n'] if len(output_buffer) == output_buffer.maxlen else []
         output_list.extend(b''.join(output_buffer).splitlines(keepends=True))
@@ -281,7 +284,7 @@ class Cronken:
             output_buffer.extend(struct.unpack(f'{len(last_fragment)}c', last_fragment))
 
         if output_list:
-            await self.rclient.rpush(output_key, output_list)
+            await rpush_with_expire([output_key], [self.output_ttl] + output_list)
 
     async def run_output(self, output_key: str, output_buffer: Deque[bytes]):
         while True:
@@ -341,7 +344,7 @@ class Cronken:
 
                     output_key = f"{self.namespace}:rundata:output:{run_id}"
                     perjob_fail_key = f"{self.namespace}:results:{job_name}:fail"
-                    await run_finalize(
+                    output, *dropped = await run_finalize(
                         keys=[rundata_key, heartbeat_key, output_key, results_fail_key, perjob_fail_key],
                         args=[
                             run_id,
@@ -352,6 +355,8 @@ class Cronken:
                             self.perjob_results_limit
                         ]
                     )
+                    if dropped:
+                        await self.rclient.delete([f"{self.namespace}:rundata:output:{x}" for x in dropped])
             finally:
                 extend_task.cancel()
                 try:
@@ -454,10 +459,12 @@ class Cronken:
         status = "success" if ret_code == 0 else "fail"
         general_result_key = f"{self.namespace}:results:{status}"
         perjob_result_key = f"{self.namespace}:results:{job_name}:{status}"
-        output = await run_finalize(
+        output, *dropped = await run_finalize(
             keys=[rundata_key, heartbeat_key, output_key, general_result_key, perjob_result_key],
             args=[run_id, ret_code, status, self.max_finalized_output_lines, self.general_results_limit, self.perjob_results_limit]
         )
+        if dropped:
+            await self.rclient.delete([f"{self.namespace}:rundata:output:{x}" for x in dropped])
 
         if release_task:
             try:

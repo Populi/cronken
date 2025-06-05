@@ -53,5 +53,7 @@ if next(to_drop) ~= nil then
   redis.call('ZREM', completed_general, unpack(to_drop))
 end
 
-return output or ""
+output = output or ""
+
+return {output, unpack(to_drop)}
 
