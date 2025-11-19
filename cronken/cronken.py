@@ -115,12 +115,14 @@ class Cronken:
                  nonclustered_lock: bool = False,
                  minimum_lock_time: float = 0.2,
                  output_ttl: int = 0,
+                 redis_ssl: bool = False,
                  **kwargs):
 
         # If we're just passed a single {"host": "foo", "port": 1234} dict, wrap it in an array to standardize it
         if type(redis_info) is dict:
             redis_info = [redis_info]
         self.redis_info = redis_info
+        self.redis_ssl = redis_ssl
         self.namespace = namespace
         self.heartbeat_cadence = heartbeat_cadence
         self.output_cadence = output_cadence
@@ -152,9 +154,9 @@ class Cronken:
         nodes = [Node(**x) for x in self.redis_info]
         # Assume we're connecting to a cluster if there's more than one node
         if len(nodes) > 1:
-            self.rclient = RedisCluster(startup_nodes=nodes)
+            self.rclient = RedisCluster(startup_nodes=nodes, ssl=self.redis_ssl)
         else:
-            self.rclient = Redis(host=nodes[0]["host"], port=nodes[0]["port"])
+            self.rclient = Redis(host=nodes[0]["host"], port=nodes[0]["port"], ssl=self.redis_ssl)
         self.pubsub = self.rclient.pubsub(ignore_subscribe_messages=True)
 
         if self.nonclustered_lock and isinstance(self.rclient, RedisCluster):
