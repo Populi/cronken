@@ -471,6 +471,10 @@ class Cronken:
         if release_task:
             try:
                 await release_task
+            except LockReleaseError as e:
+                # "Cannot release a lock that's no longer owned" is expected, so don't log it
+                if "no longer owned" not in str(e):
+                    raise e
             except Exception as e:
                 self.logger.warning(f"[{run_id}] Failed to release lock {lock}: {e!r}")
 
